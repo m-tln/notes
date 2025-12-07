@@ -1,0 +1,134 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: notes_user
+      POSTGRES_PASSWORD: notes_pass
+      POSTGRES_DB: notes_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notes_user -d notes_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - notes_network
+
+  app1:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: notes_user
+      DB_PASSWORD: notes_pass
+      DB_NAME: notes_db
+      PORT: 8080
+      
+      APP_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - notes_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 30s
+
+  app2:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: notes_user
+      DB_PASSWORD: notes_pass
+      DB_NAME: notes_db
+      PORT: 8080
+      APP_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - notes_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 30s
+
+  app3:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: notes_user
+      DB_PASSWORD: notes_pass
+      DB_NAME: notes_db
+      PORT: 8080
+      APP_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - notes_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 30s
+
+  loadbalancer:
+    build:
+      context: ./loadbalancer
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+      - "8443:443"
+    environment:
+      BACKENDS: "app1:8080,app2:8080,app3:8080"
+      PORT: "80"
+      DEBUG: "true"
+    depends_on:
+      - app1
+      - app2
+      - app3
+    networks:
+      - notes_network
+  
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - loadbalancer
+    networks:
+      - notes_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/nginx-health"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+
+networks:
+  notes_network:
+
+volumes:
+  postgres_data:
