@@ -45,7 +45,7 @@ func (b *Backend) IsAlive() bool {
 	if b.FailureCount > 3 && time.Since(b.LastCheck) < 30*time.Second {
 		return false
 	}
-	
+
 	return b.Alive
 }
 
@@ -74,7 +74,7 @@ func (s *ServerPool) MarkBackendStatus(backendUrl *url.URL, alive bool) {
 func (s *ServerPool) GetNextPeer() *Backend {
 	next := s.NextIndex()
 	l := len(s.backends) + next
-	
+
 	for i := next; i < l; i++ {
 		idx := i % len(s.backends)
 		if s.backends[idx].IsAlive() {
@@ -89,13 +89,13 @@ func (s *ServerPool) HealthCheck() {
 	client := http.Client{
 		Timeout: 2 * time.Second,
 	}
-	
+
 	for _, b := range s.backends {
 		if !b.IsAlive() && b.FailureCount > 3 && time.Since(b.LastCheck) < 30*time.Second {
 			log.Printf("Backend %s is in circuit breaker state (failures: %d)", b.URL.String(), b.FailureCount)
 			continue
 		}
-		
+
 		status := b.IsAlive()
 
 		resp, err := client.Get(b.URL.String() + "/health")
@@ -105,13 +105,13 @@ func (s *ServerPool) HealthCheck() {
 			continue
 		}
 		resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("Backend %s returned non-200: %d", b.URL.String(), resp.StatusCode)
 			b.SetAlive(false)
 			continue
 		}
-		
+
 		if !status {
 			log.Printf("Backend %s is back up (was down for %v)", b.URL.String(), time.Since(b.LastCheck))
 		}
@@ -134,9 +134,9 @@ var serverPool ServerPool
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	
+
 	var backends []string
-	
+
 	if envBackends := os.Getenv("BACKENDS"); envBackends != "" {
 		log.Printf("Parsing backends from environment variable: %s", envBackends)
 		backends = parseBackendsFromEnv(envBackends)
@@ -148,43 +148,43 @@ func main() {
 		}
 		log.Printf("Using default backends: %v", backends)
 	}
-	
+
 	if len(backends) == 0 {
 		log.Fatal("No backends configured. Set BACKENDS environment variable with comma-separated URLs")
 	}
-	
+
 	log.Printf("Initializing load balancer with %d backends", len(backends))
-	
+
 	for _, b := range backends {
 		backendUrl, err := url.Parse(b)
 		if err != nil {
 			log.Fatalf("Failed to parse backend URL %s: %v", b, err)
 		}
-		
+
 		proxy := httputil.NewSingleHostReverseProxy(backendUrl)
-		
+
 		proxy.Transport = &http.Transport{
 			ResponseHeaderTimeout: 2 * time.Second,
 			IdleConnTimeout:       2 * time.Second,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
 		}
-		
+
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Error proxying to %s: %v", backendUrl.String(), err)
 			serverPool.MarkBackendStatus(backendUrl, false)
-			
+
 			peer := serverPool.GetNextPeer()
 			if peer != nil && peer.URL.String() != backendUrl.String() {
 				log.Printf("Retrying request with: %s", peer.URL.String())
 				peer.ReverseProxy.ServeHTTP(w, r)
 				return
 			}
-			
+
 			log.Printf("No healthy backends available for retry")
 			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 		}
-		
+
 		proxy.Director = func(req *http.Request) {
 			req.Header.Set("X-Forwarded-Host", req.Host)
 			req.Header.Set("X-Forwarded-Proto", "https")
@@ -193,93 +193,93 @@ func main() {
 			req.URL.Host = backendUrl.Host
 			req.Host = backendUrl.Host
 		}
-		
+
 		serverPool.AddBackend(&Backend{
 			URL:          backendUrl,
 			Alive:        true,
 			ReverseProxy: proxy,
 			LastCheck:    time.Now(),
 		})
-		
+
 		log.Printf("Configured backend: %s", backendUrl.String())
 	}
-	
+
 	go func() {
 		time.Sleep(5 * time.Second)
 		log.Println("Performing initial health check...")
 		serverPool.HealthCheck()
-		
+
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			log.Println("Starting periodic health check...")
 			serverPool.HealthCheck()
 			healthyCount := countHealthyBackends()
-			log.Printf("Health check completed. Healthy backends: %d/%d", 
+			log.Printf("Health check completed. Healthy backends: %d/%d",
 				healthyCount, len(serverPool.backends))
-			
+
 			if os.Getenv("DEBUG") == "true" {
 				for i, b := range serverPool.backends {
 					status := "up"
 					if !b.IsAlive() {
 						status = "down"
 					}
-					log.Printf("  Backend %d: %s [%s] failures: %d", 
+					log.Printf("  Backend %d: %s [%s] failures: %d",
 						i, b.URL.String(), status, b.FailureCount)
 				}
 			}
 		}
 	}()
-	
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", loadBalancer)
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/status", statusHandler)
-	
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "80"
 	}
-	
+
 	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
+		Addr:         ":" + port,
+		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-	
+
 	go func() {
 		log.Printf("Load balancer server starting on port %s", port)
 		log.Printf("Monitoring %d backends", len(serverPool.backends))
-		
+
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
-	
+
 	<-stop
 	log.Println("Shutdown signal received...")
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Forced shutdown: %v", err)
 	}
-	
+
 	log.Println("Load balancer stopped gracefully")
 }
 
 func parseBackendsFromEnv(envString string) []string {
 	var backends []string
-	
+
 	parts := strings.SplitSeq(envString, ",")
-	
+
 	for part := range parts {
 		backend := strings.TrimSpace(part)
 		if backend != "" {
@@ -290,71 +290,71 @@ func parseBackendsFromEnv(envString string) []string {
 			backends = append(backends, backend)
 		}
 	}
-	
+
 	return backends
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	type BackendStatus struct {
-		URL           string `json:"url"`
-		Alive         bool   `json:"alive"`
-		FailureCount  int    `json:"failure_count"`
-		LastCheck     string `json:"last_check"`
+		URL          string `json:"url"`
+		Alive        bool   `json:"alive"`
+		FailureCount int    `json:"failure_count"`
+		LastCheck    string `json:"last_check"`
 	}
-	
+
 	type StatusResponse struct {
-		Status           string          `json:"status"`
-		TotalBackends    int             `json:"total_backends"`
-		HealthyBackends  int             `json:"healthy_backends"`
-		CurrentIndex     int             `json:"current_index"`
-		Backends         []BackendStatus `json:"backends"`
+		Status          string          `json:"status"`
+		TotalBackends   int             `json:"total_backends"`
+		HealthyBackends int             `json:"healthy_backends"`
+		CurrentIndex    int             `json:"current_index"`
+		Backends        []BackendStatus `json:"backends"`
 	}
-	
+
 	response := StatusResponse{
 		Status:          "operational",
 		TotalBackends:   len(serverPool.backends),
 		HealthyBackends: countHealthyBackends(),
 		CurrentIndex:    int(atomic.LoadUint64(&serverPool.current)),
 	}
-	
+
 	for _, b := range serverPool.backends {
 		b.mux.RLock()
 		backendStatus := BackendStatus{
-			URL:           b.URL.String(),
-			Alive:         b.Alive,
-			FailureCount:  b.FailureCount,
-			LastCheck:     b.LastCheck.Format(time.RFC3339),
+			URL:          b.URL.String(),
+			Alive:        b.Alive,
+			FailureCount: b.FailureCount,
+			LastCheck:    b.LastCheck.Format(time.RFC3339),
 		}
 		b.mux.RUnlock()
-		
+
 		if b.FailureCount > 3 && time.Since(b.LastCheck) < 30*time.Second {
 			backendStatus.Alive = false
 		}
-		
+
 		response.Backends = append(response.Backends, backendStatus)
 	}
-	
+
 	if response.HealthyBackends == 0 {
 		response.Status = "degraded"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	
+
 	json.NewEncoder(w).Encode(response)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	healthyCount := countHealthyBackends()
-	
+
 	if healthyCount == 0 {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprintf(w, "UNHEALTHY: No healthy backends available")
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "HEALTHY: %d/%d backends available", 
+	fmt.Fprintf(w, "HEALTHY: %d/%d backends available",
 		healthyCount, len(serverPool.backends))
 }
 
