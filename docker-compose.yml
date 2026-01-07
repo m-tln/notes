@@ -18,6 +18,15 @@ services:
     networks:
       - notes_network
 
+  ca-service:
+    build:
+      context: ./ca
+      dockerfile: Dockerfile
+    volumes:
+      - certs:/certs
+    networks:
+      - notes_network
+
   app1:
     build:
       context: ./app
@@ -43,6 +52,26 @@ services:
       retries: 3
       start_period: 30s
 
+  app1-sidecar:
+    build:
+      context: ./sidecar
+      dockerfile: Dockerfile
+    environment:
+      UPSTREAM_SERVICE: http://app1:8080
+      SIDECAR_PORT: 8443
+      TLS_CERT: /certs/app1.crt
+      TLS_KEY: /certs/app1.key
+      CA_CERT: /certs/ca.crt
+    volumes:
+      - certs:/certs
+    depends_on:
+      - ca-service
+      - app1
+    networks:
+      - notes_network
+    ports:
+      - "18443:8443"
+
   app2:
     build:
       context: ./app
@@ -67,6 +96,26 @@ services:
       retries: 3
       start_period: 30s
 
+  app2-sidecar:
+    build:
+      context: ./sidecar
+      dockerfile: Dockerfile
+    environment:
+      UPSTREAM_SERVICE: http://app2:8080
+      SIDECAR_PORT: 8443
+      TLS_CERT: /certs/app2.crt
+      TLS_KEY: /certs/app2.key
+      CA_CERT: /certs/ca.crt
+    volumes:
+      - certs:/certs
+    depends_on:
+      - ca-service
+      - app2
+    networks:
+      - notes_network
+    ports:
+      - "18444:8443"
+
   app3:
     build:
       context: ./app
@@ -90,29 +139,88 @@ services:
       timeout: 2s
       retries: 3
       start_period: 30s
+  
+  app3-sidecar:
+    build:
+      context: ./sidecar
+      dockerfile: Dockerfile
+    environment:
+      UPSTREAM_SERVICE: http://app3:8080
+      SIDECAR_PORT: 8443
+      TLS_CERT: /certs/app3.crt
+      TLS_KEY: /certs/app3.key
+      CA_CERT: /certs/ca.crt
+    volumes:
+      - certs:/certs
+    depends_on:
+      - ca-service
+      - app3
+    networks:
+      - notes_network
+    ports:
+      - "18445:8443"
+
+  email-service:
+    build:
+      context: ./email-service
+      dockerfile: Dockerfile
+    environment:
+      EMAIL_ADDR: admin@notes.com
+      PORT: 8081
+      EMAIL_WORKERS: 5
+      EMAIL_QUEUE_SIZE: 200
+    networks:
+      - notes_network
+    expose:
+      - "8081"
+
+  email-sidecar:
+    build:
+      context: ./sidecar
+      dockerfile: Dockerfile
+    environment:
+      UPSTREAM_SERVICE: http://email-service:8081
+      SIDECAR_PORT: 8443
+      TLS_CERT: /certs/email.crt
+      TLS_KEY: /certs/email.key
+      CA_CERT: /certs/ca.crt
+    volumes:
+      - certs:/certs
+    depends_on:
+      - ca-service
+      - email-service
+    networks:
+      - notes_network
 
   loadbalancer:
     build:
       context: ./loadbalancer
       dockerfile: Dockerfile
-    ports:
-      - "8080:80"
-      - "8443:443"
     environment:
-      BACKENDS: "app1:8080,app2:8080,app3:8080"
-      PORT: "80"
-      DEBUG: "true"
+      BACKENDS: "https://app1-sidecar:8443,https://app2-sidecar:8443,https://app3-sidecar:8443"
+      PORT: "443"
+      TLS_CERT: /certs/loadbalancer.crt
+      TLS_KEY: /certs/loadbalancer.key
+      CA_CERT: /certs/ca.crt
+    volumes:
+      - certs:/certs
+    ports:
+      - "8443:8443"
+    expose:
+      - "443"
     depends_on:
-      - app1
-      - app2
-      - app3
+      - app1-sidecar
+      - app2-sidecar
+      - app3-sidecar
     networks:
       - notes_network
-  
   nginx:
     build:
       context: ./nginx
       dockerfile: Dockerfile
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
     ports:
       - "80:80"
       - "443:443"
@@ -120,15 +228,10 @@ services:
       - loadbalancer
     networks:
       - notes_network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/nginx-health"]
-      interval: 10s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
 
 networks:
   notes_network:
 
 volumes:
   postgres_data:
+  certs:

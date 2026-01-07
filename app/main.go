@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -176,6 +178,12 @@ func addNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go func() {
+		if err := sendToEmailService(note); err != nil {
+			log.Printf("Failed to send to email service: %v", err)
+		}
+	}()
+
 	log.Printf("Successfully created note ID=%d with title: '%s'", note.ID, note.Title)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(note)
@@ -290,4 +298,55 @@ func deleteNote(w http.ResponseWriter, r *http.Request, id int) {
 	log.Printf("Successfully deleted note ID=%d (rows affected: %d)", id, rowsAffected)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func sendToEmailService(note Note) error {
+	emailServiceURL := os.Getenv("EMAIL_SERVICE_URL")
+	if emailServiceURL == "" {
+		emailServiceURL = "https://email-service:8443"
+	}
+
+	storeData := map[string]any{
+		"id":          strconv.Itoa(note.ID),
+		"title":       note.Title,
+		"content":     note.Content,
+		"description": note.Title,
+		"created_at":  note.CreatedAt,
+	}
+
+	jsonData, err := json.Marshal(storeData)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+
+	storeResp, err := client.Post(emailServiceURL+"/email/store", 
+        "application/json", bytes.NewBuffer(jsonData))
+    if err != nil || storeResp.StatusCode != http.StatusAccepted {
+        return fmt.Errorf("failed to store note in email service")
+    }
+    storeResp.Body.Close()
+
+	extractData := map[string]string{
+        "note_id": strconv.Itoa(note.ID),
+    }
+    
+    extractJson, _ := json.Marshal(extractData)
+    extractResp, err := client.Post(emailServiceURL+"/email/extract", 
+        "application/json", bytes.NewBuffer(extractJson))
+    if err != nil || extractResp.StatusCode != http.StatusAccepted {
+        return fmt.Errorf("failed to extract note from email service")
+    }
+    extractResp.Body.Close()
+
+	log.Printf("Note ID=%d sent to email service successfully", note.ID)
+	return nil
 }

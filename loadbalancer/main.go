@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -86,8 +87,15 @@ func (s *ServerPool) GetNextPeer() *Backend {
 }
 
 func (s *ServerPool) HealthCheck() {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
 	client := http.Client{
-		Timeout: 2 * time.Second,
+		Timeout:   2 * time.Second,
+		Transport: transport,
 	}
 
 	for _, b := range s.backends {
@@ -164,6 +172,9 @@ func main() {
 		proxy := httputil.NewSingleHostReverseProxy(backendUrl)
 
 		proxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
 			ResponseHeaderTimeout: 2 * time.Second,
 			IdleConnTimeout:       2 * time.Second,
 			MaxIdleConns:          100,
@@ -239,7 +250,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "80"
+		port = "443"
 	}
 
 	server := &http.Server{
@@ -248,18 +259,28 @@ func main() {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		TLSConfig: &tls.Config{
+            MinVersion: tls.VersionTLS12,
+        },
 	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		log.Printf("Load balancer server starting on port %s", port)
-		log.Printf("Monitoring %d backends", len(serverPool.backends))
-
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
-		}
+		log.Printf("Load balancer server starting on port %s (HTTPS)", port)
+        log.Printf("Monitoring %d backends", len(serverPool.backends))
+        
+        certFile := os.Getenv("TLS_CERT")
+        keyFile := os.Getenv("TLS_KEY")
+        
+        if certFile != "" && keyFile != "" {
+            if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+                log.Fatalf("Server error: %v", err)
+            }
+        } else {
+            log.Fatal("TLS_CERT and TLS_KEY environment variables are required for HTTPS")
+        }
 	}()
 
 	<-stop
